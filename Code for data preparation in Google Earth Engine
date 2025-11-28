@@ -1,0 +1,134 @@
+// =============================================
+// EARTH ENGINE: EXPORT MULTI-BAND WITH MEDIAN COMPOSITES
+// =============================================
+
+// 1. Define region and load data
+var geometry = ee.FeatureCollection("projects/ee-mohammadoney/assets/fullbayofbengal");
+
+// 2. Load and process OISST data
+var oisst = ee.ImageCollection('NOAA/CDR/OISST/V2_1')
+  .select(['sst'])
+  .filterDate('1982-01-01', '2024-01-01')
+  .filterBounds(geometry);
+
+print('OISST collection size:', oisst.size());
+
+// 3. Process SST data (Kelvin to Celsius)
+var processSST = function(image) {
+  // OISST scaling: multiply by 0.01 and convert from Kelvin to Celsius
+  return image.multiply(0.01).add(-273.15)
+    .copyProperties(image, ['system:time_start']);
+};
+
+var sstProcessed = oisst.map(processSST);
+
+// 4. Create monthly MEDIAN composite images
+var years = ee.List.sequence(1982, 2023);
+var months = ee.List.sequence(1, 12);
+
+// FIXED: Proper band naming without decimals
+var monthlyMedians = years.map(function(year) {
+  return months.map(function(month) {
+    var start = ee.Date.fromYMD(year, month, 1);
+    var end = start.advance(1, 'month');
+    
+    var monthlyData = sstProcessed.filterDate(start, end);
+    
+    // Use MEDIAN for better noise reduction
+    var monthlyMedian = monthlyData.median();
+    
+    // FIXED: Convert numbers to integers for band names
+    var yearInt = ee.Number(year).int();
+    var monthInt = ee.Number(month).int();
+    
+    // Create band name: YYYY_MM (using integers)
+    var bandName = ee.String(yearInt.format())
+      .cat('_')
+      .cat(monthInt.format('%02d'));
+    
+    return monthlyMedian
+      .rename(bandName)
+      .set({
+        'year': yearInt,
+        'month': monthInt,
+        'system:time_start': start.millis()
+      });
+  });
+}).flatten();
+
+var monthlyCollection = ee.ImageCollection(monthlyMedians);
+
+// 5. Convert collection to multi-band image
+var multiBandSST = monthlyCollection.toBands();
+
+// Count and display band info
+var bandNames = multiBandSST.bandNames();
+print('Total bands (months):', bandNames.size());
+print('First 10 bands:', bandNames.slice(0, 10));
+print('Last 10 bands:', bandNames.slice(-10));
+
+// 6. Export MEDIAN composites
+Export.image.toDrive({
+  image: multiBandSST,
+  description: 'BayOfBengal_SST_Monthly_Median_1982_2023',
+  folder: 'earthengine',
+  region: geometry,
+  scale: 5000,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF',
+  crs: 'EPSG:4326'
+});
+
+print('✅ Monthly MEDIAN composites export task created!');
+
+// 7. SIMPLIFIED: Also export as a time series CSV for quick analysis
+var timeSeries = sstProcessed.map(function(image) {
+  var meanSST = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry,
+    scale: 5000,
+    bestEffort: true
+  });
+  
+  return ee.Feature(null, {
+    'date': image.date().format('YYYY-MM-dd'),
+    'sst_celsius': meanSST.get('sst'),
+    'year': image.date().get('year'),
+    'month': image.date().get('month')
+  });
+});
+
+// Export time series to CSV
+Export.table.toDrive({
+  collection: timeSeries,
+  description: 'BayOfBengal_SST_Daily_TimeSeries_1982_2023',
+  folder: 'earthengine',
+  fileFormat: 'CSV'
+});
+
+print('✅ Daily time series CSV export task created!');
+
+// 8. Quick visualization
+var sampleImage = sstProcessed.first();
+Map.centerObject(geometry, 5);
+Map.addLayer(sampleImage, {
+  min: 20, 
+  max: 30, 
+  palette: ['blue', 'cyan', 'green', 'yellow', 'red']
+}, 'Sample SST');
+
+Map.addLayer(geometry, {color: 'white', fillColor: '00000000'}, 'Bay of Bengal Region');
+
+// 9. Data verification
+print('Data verification:');
+print('First image date:', sstProcessed.first().date());
+print('Last image date:', sstProcessed.sort('system:time_start', false).first().date());
+
+var sampleStats = sampleImage.reduceRegion({
+  reducer: ee.Reducer.mean().combine(ee.Reducer.minMax(), null, true),
+  geometry: geometry,
+  scale: 5000,
+  bestEffort: true
+});
+
+print('Sample SST statistics (Celsius):', sampleStats);
