@@ -1,63 +1,46 @@
-##Bay of Bengal Climate Change Analysis: Quantifying Sea Surface Temperature Warming (1982-2023)
+This project analyzed over four decades of sea surface temperature data to detect and quantify long-term warming trends in the Bay of Bengal, using robust statistical methods to separate climate signals from seasonal cycles and natural variability.
 
-I conducted a comprehensive climate change analysis of the Bay of Bengal, processing 42 years of satellite data to quantify sea surface temperature warming trends. The project involved a complete end-to-end geospatial workflow from data acquisition in Google Earth Engine to advanced statistical analysis in Python, identifying statistically significant warming patterns across the region.
+Step-by-Step Process:
 
-The Complete Process:
+Data Acquisition & Preprocessing:
+Monthly satellite-derived SST data from the NOAA OISST v2.1 dataset was extracted for the period 1982-2024.
+The data was corrected using the scale factor (0.01) to convert from scaled integers to actual temperature in degrees Celsius.
+Monthly median composites were created for each year-month combination to produce a continuous, gap-free time series.
+Spatial averaging was performed over the entire Bay of Bengal region to create a single representative time series for the basin.
 
-Phase 1: Data Acquisition & Preparation (Google Earth Engine)
-Dataset Selection: Used NOAA OISST V2.1 dataset - the gold standard for sea surface temperature monitoring
-Temporal Scope: Extracted monthly data from January 1982 to December 2023 (504 months total)
-Spatial Scope: Focused on Bay of Bengal region using custom geographic boundaries
-Data Processing: Created monthly median composites to reduce noise and cloud contamination
-Export Strategy: Generated multi-band GeoTIFF with 504 bands (one per month) for efficient time series analysis
-Technical Implementation: Wrote Earth Engine JavaScript code to filter, process, and export data to Google Drive
+Time Series Decomposition (STL):
+Seasonal-Trend decomposition using LOESS (STL) was applied to separate the raw SST data into three components:
+Trend: The long-term, underlying climate signal.
+Seasonal: The repeating annual cycle (higher in summer, lower in winter).
+Residual: Random noise and short-term variability not explained by trend or seasonality.
 
-Phase 2: Data Transfer & Infrastructure Setup
-Cloud Pipeline: Established seamless data flow: Earth Engine → Google Drive → Google Colab
-Storage Management: Organized 500+ MB of multi-temporal raster data for efficient access
-Environment Setup: Configured Colab notebook with professional geospatial Python stack
-Data Validation: Verified file integrity and spatial properties after transfer
+Trend Detection & Quantification:
+Mann-Kendall Test: A non-parametric statistical test was applied to the trend component to detect whether a monotonic (consistently upward or downward) trend exists. The test produced a Z-score and p-value.
+Sen's Slope Estimator: This robust method calculated the actual rate of temperature change per month/year/decade, along with 95% confidence intervals to quantify uncertainty.
 
-Phase 3: Data Processing & Quality Control (Python/Colab)
-Data Loading: Used Rasterio to read 504-band GeoTIFF with proper spatial referencing
-Critical Discovery: Identified data storage issue - values stored with -273.15 offset (appeared as -250°C range)
-Data Correction: Applied transformation: raw_data + 273.15 to obtain realistic 18-32°C SST range
-Quality Validation: Verified corrected values against known Bay of Bengal temperature ranges
-Temporal Alignment: Parsed band names to create proper datetime indices for time series analysis
-Spatial Validation: Confirmed 5km resolution and proper geographic projection
+Pattern Identification & Real-World Interpretation:
+The analysis revealed a statistically significant warming trend of 0.209°C per decade (or 0.90°C total over 43 years).
+The Mann-Kendall test showed extremely strong significance (p ≈ 0.0000), confirming the trend is not due to random chance.
+The seasonal component showed an expected annual cycle with ~3.5°C amplitude (warmer in summer months).
+Residual variability was relatively low (0.197°C standard deviation), indicating the model effectively captured the main patterns.
 
-Phase 4: Advanced Statistical Analysis
-Regional Time Series: Calculated area-weighted average SST for each of 504 months
-Trend Detection: Applied Ordinary Least Squares (OLS) regression to identify warming rate
-Statistical Significance: Used p-value < 0.05 threshold and Mann-Kendall non-parametric test
-Pixel-wise Analysis: Implemented vectorized linear regression across all 150,176 spatial pixels
-Spatial Patterns: Mapped geographic distribution of warming trends and significance levels
-Climate Context: Compared results against global ocean warming benchmarks from IPCC reports
+Real-World Translation:
+Climate Change Signal: The warming rate of ~0.21°C/decade aligns with global ocean warming trends but is specific to the Bay of Bengal. This represents a clear climate change signal in the region.
 
-Phase 5: Visualization & Professional Outputs
-Time Series Plots: Created interactive charts showing 42-year trend with rolling averages
-Spatial Maps: Generated publication-quality maps of mean SST and warming patterns
-Statistical Dashboards: Built comprehensive visualizations of trend distributions and seasonal cycles
-GIS Exports: Produced GeoTIFF files of trend maps for further spatial analysis
-Data Reports: Compiled CSV files with time series data and statistical summaries
+Ecological & Environmental Impacts:
+Coral Bleaching Risk: Sustained warming increases thermal stress on coral reefs, making bleaching events more frequent and severe.
+Marine Ecosystem Shifts: Warmer waters can alter species distributions, migration patterns, and breeding cycles.
+Fisheries Productivity: Changes in temperature affect nutrient cycling and primary production, potentially impacting fish stocks.
+Extreme Weather: Warmer sea surfaces can intensify cyclones and influence monsoon patterns through increased evaporation.
+Regional Climate Context: The Bay of Bengal is a critical region for South Asian climate. This documented warming contributes to sea-level rise (through thermal expansion) and may influence rainfall patterns over adjacent landmasses.
 
-Phase 6: Interpretation & Climate Impact Assessment
-Scientific Context: Compared Bay of Bengal warming against global ocean averages
-Ecological Implications: Assessed potential impacts on marine ecosystems and fisheries
-Climate Significance: Evaluated regional warming in context of global climate change
-Methodological Validation: Verified results through multiple statistical approaches
-Professional Documentation: Created comprehensive analysis report with methodology and findings
+Visualization & Validation:
+A comprehensive six-panel figure was created showing:
+1) Original data with trend overlay
+2) Sen's slope with confidence intervals
+3) Average seasonal cycle
+4) Residual distribution
+5) Decadal averages
+6) Statistical summary
 
-Key Outcomes & Implications
-
-Primary Finding:
-The Bay of Bengal is warming at 0.178°C per decade - 62% faster than the global ocean average, with this warming affecting 67.7% of the region at statistically significant levels.
-
-Scientific Implications:
-Accelerated coastal ecosystem changes and coral bleaching risks
-Increased marine heatwave frequency impacting fisheries and biodiversity
-Sea level rise contributions from thermal expansion effects
-Regional climate pattern shifts affecting monsoon systems
-
-Technical Achievement:
-Transformed 504 raw satellite images into actionable climate insights through an end-to-end geospatial workflow.
+Additional verification using Kendall's tau correlation confirmed the robustness of findings.
