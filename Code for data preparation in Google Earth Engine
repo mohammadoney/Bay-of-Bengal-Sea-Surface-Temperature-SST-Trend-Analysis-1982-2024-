@@ -1,134 +1,98 @@
-// =============================================
-// EARTH ENGINE: EXPORT MULTI-BAND WITH MEDIAN COMPOSITES
-// =============================================
-
-// 1. Define region and load data
+// 1. Define region
 var geometry = ee.FeatureCollection("projects/ee-mohammadoney/assets/fullbayofbengal");
 
-// 2. Load and process OISST data
+// 2. Load OISST data and apply scale factor
 var oisst = ee.ImageCollection('NOAA/CDR/OISST/V2_1')
   .select(['sst'])
-  .filterDate('1982-01-01', '2024-01-01')
+  .filterDate('1982-01-01', '2025-01-01')
   .filterBounds(geometry);
 
-print('OISST collection size:', oisst.size());
+var sst_corrected = oisst.map(function(img) {
+  return img.multiply(0.01).copyProperties(img, img.propertyNames());
+});
 
-// 3. Process SST data (Kelvin to Celsius)
-var processSST = function(image) {
-  // OISST scaling: multiply by 0.01 and convert from Kelvin to Celsius
-  return image.multiply(0.01).add(-273.15)
-    .copyProperties(image, ['system:time_start']);
-};
+// 3. Create monthly median composites
+var startYear = 1982;
+var endYear = 2024;
 
-var sstProcessed = oisst.map(processSST);
-
-// 4. Create monthly MEDIAN composite images
-var years = ee.List.sequence(1982, 2023);
 var months = ee.List.sequence(1, 12);
 
-// FIXED: Proper band naming without decimals
-var monthlyMedians = years.map(function(year) {
-  return months.map(function(month) {
-    var start = ee.Date.fromYMD(year, month, 1);
-    var end = start.advance(1, 'month');
+var monthlyComposites = ee.List([]);
+for (var y = startYear; y <= endYear; y++) {
+  var year = ee.Number(y);
+  
+  var monthly = months.map(function(m) {
+    var month = ee.Number(m);
     
-    var monthlyData = sstProcessed.filterDate(start, end);
+    // Filter for year and month
+    var monthlyImages = sst_corrected.filter(ee.Filter.calendarRange(year, year, 'year'))
+                                     .filter(ee.Filter.calendarRange(month, month, 'month'));
     
-    // Use MEDIAN for better noise reduction
-    var monthlyMedian = monthlyData.median();
+    // Compute median
+    var medianImg = monthlyImages.median()
+      .set('year', year)
+      .set('month', month)
+      .set('system:time_start', ee.Date.fromYMD(year, month, 1).millis());
     
-    // FIXED: Convert numbers to integers for band names
-    var yearInt = ee.Number(year).int();
-    var monthInt = ee.Number(month).int();
+    // Rename band to YYYY_MM
+    var bandName = year.format().cat('_').cat(month.format('%02d'));
+    medianImg = medianImg.rename(bandName);
     
-    // Create band name: YYYY_MM (using integers)
-    var bandName = ee.String(yearInt.format())
-      .cat('_')
-      .cat(monthInt.format('%02d'));
-    
-    return monthlyMedian
-      .rename(bandName)
-      .set({
-        'year': yearInt,
-        'month': monthInt,
-        'system:time_start': start.millis()
-      });
-  });
-}).flatten();
-
-var monthlyCollection = ee.ImageCollection(monthlyMedians);
-
-// 5. Convert collection to multi-band image
-var multiBandSST = monthlyCollection.toBands();
-
-// Count and display band info
-var bandNames = multiBandSST.bandNames();
-print('Total bands (months):', bandNames.size());
-print('First 10 bands:', bandNames.slice(0, 10));
-print('Last 10 bands:', bandNames.slice(-10));
-
-// 6. Export MEDIAN composites
-Export.image.toDrive({
-  image: multiBandSST,
-  description: 'BayOfBengal_SST_Monthly_Median_1982_2023',
-  folder: 'earthengine',
-  region: geometry,
-  scale: 5000,
-  maxPixels: 1e13,
-  fileFormat: 'GeoTIFF',
-  crs: 'EPSG:4326'
-});
-
-print('✅ Monthly MEDIAN composites export task created!');
-
-// 7. SIMPLIFIED: Also export as a time series CSV for quick analysis
-var timeSeries = sstProcessed.map(function(image) {
-  var meanSST = image.reduceRegion({
-    reducer: ee.Reducer.mean(),
-    geometry: geometry,
-    scale: 5000,
-    bestEffort: true
+    return medianImg;
   });
   
-  return ee.Feature(null, {
-    'date': image.date().format('YYYY-MM-dd'),
-    'sst_celsius': meanSST.get('sst'),
-    'year': image.date().get('year'),
-    'month': image.date().get('month')
+  monthlyComposites = monthlyComposites.cat(monthly);
+}
+
+// Convert list to ImageCollection
+var monthlyCollection = ee.ImageCollection.fromImages(monthlyComposites);
+
+// 4. Calculate mean for each month-year (full time series)
+var timeSeriesData = monthlyCollection.map(function(image) {
+  // Get year and month from properties
+  var year = ee.Number(image.get('year'));
+  var month = ee.Number(image.get('month'));
+  var date = ee.Date.fromYMD(year, month, 1);
+  
+  // Get band name
+  var bandName = image.bandNames().get(0);
+  
+  // Calculate mean over region
+  var stats = image.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geometry.geometry(),
+    scale: 27830,
+    bestEffort: true,
+    maxPixels: 1e13
   });
-});
+  
+  // Get the mean value
+  var meanValue = stats.get(bandName);
+  
+  // Create a feature for each month-year
+  return ee.Feature(null, {
+    'date': date.format('YYYY-MM-dd'),
+    'year': year,
+    'month': month,
+    'month_name': date.format('MMM'),
+    'year_month': year.format().cat('-').cat(month.format('%02d')),
+    'mean_sst': meanValue,
+    'system:time_start': date.millis()
+  });
+}).filter(ee.Filter.notNull(['mean_sst']));
 
-// Export time series to CSV
+// Sort by date
+timeSeriesData = timeSeriesData.sort('system:time_start');
+
+// Print first few records to check
+print('First 5 records:', timeSeriesData.limit(5));
+print('Total records:', timeSeriesData.size());
+
+// 5. Export as CSV
 Export.table.toDrive({
-  collection: timeSeries,
-  description: 'BayOfBengal_SST_Daily_TimeSeries_1982_2023',
+  collection: timeSeriesData,
+  description: 'Monthly_SST_TimeSeries_Bay_of_Bengal_1982_2024',
   folder: 'earthengine',
-  fileFormat: 'CSV'
+  fileFormat: 'CSV',
+  selectors: ['date', 'year', 'month', 'month_name', 'year_month', 'mean_sst']
 });
-
-print('✅ Daily time series CSV export task created!');
-
-// 8. Quick visualization
-var sampleImage = sstProcessed.first();
-Map.centerObject(geometry, 5);
-Map.addLayer(sampleImage, {
-  min: 20, 
-  max: 30, 
-  palette: ['blue', 'cyan', 'green', 'yellow', 'red']
-}, 'Sample SST');
-
-Map.addLayer(geometry, {color: 'white', fillColor: '00000000'}, 'Bay of Bengal Region');
-
-// 9. Data verification
-print('Data verification:');
-print('First image date:', sstProcessed.first().date());
-print('Last image date:', sstProcessed.sort('system:time_start', false).first().date());
-
-var sampleStats = sampleImage.reduceRegion({
-  reducer: ee.Reducer.mean().combine(ee.Reducer.minMax(), null, true),
-  geometry: geometry,
-  scale: 5000,
-  bestEffort: true
-});
-
-print('Sample SST statistics (Celsius):', sampleStats);
