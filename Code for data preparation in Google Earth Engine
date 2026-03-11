@@ -1,78 +1,61 @@
-// 1. Define region
+// 1. Load your specific geometry asset
 var geometry = ee.FeatureCollection("projects/ee-mohammadoney/assets/fullbayofbengal");
+Map.centerObject(geometry, 5);
 
-// 2. Load OISST data and apply scale factor (0.01 for 'sst')
-var oisst = ee.ImageCollection('NOAA/CDR/OISST/V2_1')
-  .select(['sst'])
-  .filterDate('1982-01-01', '2025-01-01')
-  .filterBounds(geometry);
-
-var sst_corrected = oisst.map(function(img) {
-  return img
-    .multiply(0.01)                           // apply scale factor
-    .copyProperties(img, img.propertyNames()); // keep original metadata
-});
-
-// 3. Create annual median composites (1982–2024)
-var startYear = 1982;
-var endYear   = 2024;
-
+// 2. Parameters 
+var startYear = 1985;
+var endYear = 2025; 
 var years = ee.List.sequence(startYear, endYear);
+var months = ee.List.sequence(1, 12);
 
-// Map over years to create one median composite per year
-var annualImages = years.map(function(y) {
-  y = ee.Number(y).toInt();  // ensure integer year [web:24]
+// 3. Load Dataset
+var oisst = ee.ImageCollection("NOAA/CDR/OISST/V2_1").select('sst');
 
-  // Filter by year
-  var yearlyColl = sst_corrected.filter(ee.Filter.calendarRange(y, y, 'year'));
+// 4. Create Monthly Median Collection with Scaling
+var monthlyComposites = years.map(function(y) {
+  return months.map(function(m) {
+    var monthlyMedian = oisst
+      .filter(ee.Filter.calendarRange(y, y, 'year'))
+      .filter(ee.Filter.calendarRange(m, m, 'month'))
+      .median()
+      // APPLY SCALING: Multiply by 0.01 to get actual Celsius
+      .multiply(0.01) 
+      .set('year', y)
+      .set('month', m)
+      .set('month_index', ee.Number(y).subtract(startYear).multiply(12).add(m).subtract(1));
+    
+    // Add Longitude and Latitude bands
+    var coords = ee.Image.pixelLonLat();
+    return monthlyMedian.addBands(coords).rename(['sst', 'longitude', 'latitude']).clip(geometry);
+  });
+}).flatten();
 
-  // Median composite for the year
-  var annualMedian = yearlyColl.median()
-    .set('year', y)
-    .set('system:time_start', ee.Date.fromYMD(y, 1, 1).millis());
+var monthlyCol = ee.ImageCollection.fromImages(monthlyComposites);
 
-  // Format year as an integer string, no decimals
-  var yearStr = y.format('%d');  // e.g., "1982" [web:21]
+// 5. Sampling Pixels
+var samplePoints = monthlyCol.map(function(img) {
+  var year = img.get('year');
+  var month = img.get('month');
+  var monthIdx = img.get('month_index');
+  
+  return img.sample({
+    region: geometry,
+    scale: 27830,
+    geometries: false 
+  }).map(function(f) {
+    return f.set({
+      'year': year,
+      'month': month,
+      'month_index': monthIdx
+    });
+  });
+}).flatten();
 
-  // Rename band to SST_YYYY
-  var bandName = ee.String('SST_').cat(yearStr);
-  annualMedian = annualMedian.rename(bandName);
-
-  return annualMedian;
+// 6. Export to Google Drive
+Export.table.toDrive({
+  collection: samplePoints,
+  description: 'BoB_SST_1985_2025',
+  fileFormat: 'CSV',
+  // Re-ordering selectors for better CSV readability
+  selectors: ['longitude', 'latitude', 'month_index', 'sst', 'year', 'month']
 });
-
-// 4. Convert list of annual images to a single multi-band image
-//    Each year is a separate band
-var annualMultiBand = ee.ImageCollection.fromImages(annualImages).toBands();
-
-// Optional: clean up band names (remove default 0_, 1_ prefixes)
-var bandNames = annualMultiBand.bandNames();
-// bandNames will look like ['0_SST_1982', '1_SST_1983', ...]
-// Create new names without the index prefixes
-var cleanBandNames = bandNames.map(function(bn) {
-  bn = ee.String(bn);
-  // Split at '_' and drop the first (index) token
-  var tokens = bn.split('_');
-  // tokens: ['0', 'SST', '1982'] → keep last 2 → 'SST_1982'
-  var lastTwo = ee.List([tokens.get(1), tokens.get(2)]);
-  return ee.String(lastTwo.get(0)).cat('_').cat(ee.String(lastTwo.get(1)));
-});
-
-annualMultiBand = annualMultiBand.rename(cleanBandNames);  // valid band names [web:29]
-
-// 5. Export the multi-band annual median composite GeoTIFF to Drive
-Export.image.toDrive({
-  image: annualMultiBand,
-  description: 'Annual_Median_SST_Bay_of_Bengal_1982_2024',
-  folder: 'earthengine',
-  fileNamePrefix: 'Annual_Median_SST_BoB_1982_2024',
-  region: geometry.geometry(),
-  scale: 27830,        // native OISST resolution (~0.25°) [web:6]
-  crs: 'EPSG:4326',    // WGS84 lat/lon
-  maxPixels: 1e13
-});
-
-// (Optional) Print band names to verify
-print('Annual multi-band SST image:', annualMultiBand);
-print('Band names:', annualMultiBand.bandNames());
-
