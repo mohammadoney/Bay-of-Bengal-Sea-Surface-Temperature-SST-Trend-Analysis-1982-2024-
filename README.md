@@ -1,12 +1,17 @@
-Data Preparation:
-NOAA OISST V2.1 daily SST data for 1982–2024 was extracted over the Bay of Bengal region using Google Earth Engine.
-Annual median composites were generated for each year and stacked into a multi-band GeoTIFF for spatial and temporal analysis.
+Data Acquisition & Processing:
+Leveraged Google Earth Engine to process the NOAA OISST V2.1 dataset.
+Built a pipeline to create monthly median composites and sampled ~27km pixels directly to a CSV.
 
-Analysis:
-Temporal Trend: Basin-wide annual median SST was analyzed using the Mann–Kendall test to detect monotonic trends and Sen’s slope to quantify warming rate.
-Spatial Pattern: Pixel-by-pixel Mann–Kendall analysis was performed to map trend magnitude (Sen’s slope) and statistical significance (Z-score) across the entire basin.
 
-Result Interpretation:
-The Bay of Bengal warmed at an average rate of 0.022 °C/year, amounting to ~0.92 °C total warming over 42 years.
-Warming is spatially uniform across the entire basin (0.01–0.03 °C/year everywhere) and statistically significant in all regions (Z > 3).
-This translates to a consistently warmer marine environment throughout the Bay of Bengal, with implications for marine ecosystems, cyclone activity, and regional climate.
+Analysis Pipeline (Python):
+Data Quality: Verified 100% spatial coverage across the entire 41-year record.
+Pre-whitening: Detected significant serial correlation (Lag-1 ACF of 0.72), confirming the need for a modified approach.
+Trend Detection: Applied the Yue & Wang (2004) modified Mann-Kendall test to account for autocorrelation.
+Magnitude: Calculated the Theil-Sen slope to determine the robust rate of change.
+
+
+Key Findings:
+Basin-Wide Warming: The Bay of Bengal is warming at a statistically significant rate of 0.212°C per decade.
+Statistical Confidence: This trend is highly robust (Yue-Wang p-value ≈ 0.0), with a 95% confidence interval of [0.147 to 0.276] °C/decade.
+Spatial Patterns: Mapped the significant pixel-wise trends, highlighting regions of accelerated warming.
+Sensitivity Check: A Jackknife analysis confirmed the trend is stable and not driven by any single anomalous year.
