@@ -1,115 +1,185 @@
-# 1st Analysis: To identify temporal change and measure it 
-!pip install rasterio rioxarray
+#Phase 1: Data Quality & Pre-processing
 
-import numpy as np
-import xarray as xr
+
 import pandas as pd
-import pymannkendall as mk
-import rioxarray  # activates the rio accessor/backend [web:90][web:99]
-
-tif_path = "/content/drive/MyDrive/earthengine/Annual_Median_SST_BoB_1982_2024.tif"
-
-# Load as DataArray: dims ('band','y','x')
-da = rioxarray.open_rasterio(tif_path)  # or xr.open_dataarray(..., engine="rasterio") after this [web:94][web:91]
-
-# Time coord: 1982–2024
-n_time = da.sizes["band"]
-start_year = 1982
-time = pd.date_range(f"{start_year}-01-01", periods=n_time, freq="AS")
-
-da = da.assign_coords(band=time).rename(band="time")
-
-# Basin-mean annual SST
-basin_ts_annual = da.mean(dim=("y", "x"), skipna=True)
-
-y = basin_ts_annual.values
-mask = np.isfinite(y)
-y_clean = y[mask]
-
-result = mk.original_test(y_clean)
-
-print("Years:", time[mask][0].year, "to", time[mask][-1].year)
-print("Trend:", result.trend)
-print("h (significant?):", result.h)
-print("p-value:", result.p)
-print("Tau:", result.Tau)
-print("Z:", result.z)
-print("Sen's slope (SST units/year):", result.slope)
-print("Intercept:", result.intercept)
-
-# 2nd Analysis: To identify saptial change
-!pip install rasterio pymannkendall matplotlib numpy
 import numpy as np
-import rasterio
-from rasterio.plot import show
-import pymannkendall as mk
 import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_squared_error, r2_score
+from scipy.stats import pearsonr
+from statsmodels.graphics.tsaplots import plot_acf
+import statsmodels.api as sm
 
-tif_path = "/content/drive/MyDrive/earthengine/Annual_Median_SST_BoB_1982_2024.tif"
+# 1. Load Datasets
+# Replace these paths if you are running locally or change the drive mounting point
+oisst_path = '/content/drive/MyDrive/earthengine/BoB_SST_41Years_Scaled_1985_2025.csv'
 
-# ---- read the GeoTIFF ----
-with rasterio.open(tif_path) as src:
-    data = src.read()           # shape: (T, Y, X)
-    meta = src.meta.copy()
 
-# assume first axis is time (one band per year)
-n_t, n_y, n_x = data.shape
+df_oisst = pd.read_csv(oisst_path)
 
-# pre‑allocate Sen’s slope and MK Z
-sen_slope = np.full((n_y, n_x), np.nan, dtype="float32")
-mk_z      = np.full((n_y, n_x), np.nan, dtype="float32")
 
-# time step (years) – here 1 year between images
-dt = 1.0
 
-for i in range(n_y):
-    for j in range(n_x):
-        ts = data[:, i, j]
+# ---------------------------------------------------------
+# STEP 1: Data Gap Assessment
+# ---------------------------------------------------------
+print("\n--- Step 1: Data Gap Assessment ---")
 
-        # mask pixels that are all nan
-        if np.all(np.isnan(ts)):
-            continue
+# Calculate max pixels found in a single month (assumed as 100% coverage)
+max_pixels = df_oisst.groupby(['year', 'month']).size().max()
+monthly_counts = df_oisst.groupby(['year', 'month']).size().reset_index(name='pixel_count')
+monthly_counts['availability_pct'] = (monthly_counts['pixel_count'] / max_pixels) * 100
 
-        # drop nans
-        mask = ~np.isnan(ts)
-        y = ts[mask]
+print(f"Average Spatial Coverage: {monthly_counts['availability_pct'].mean():.2f}%")
+print(f"Minimum Spatial Coverage: {monthly_counts['availability_pct'].min():.2f}% in {monthly_counts.loc[monthly_counts['availability_pct'].idxmin(), 'year']}")
 
-        if y.size < 5:   # too short to test
-            continue
+# Plot Coverage over time
+plt.figure(figsize=(12, 4))
+plt.plot(monthly_counts.index, monthly_counts['availability_pct'], color='teal')
+plt.axhline(y=95, color='r', linestyle='--', label='95% Threshold')
+plt.ylabel('Pixel Availability (%)')
+plt.xlabel('Months (Sequential)')
+plt.title('Temporal Continuity & Data Gap Assessment')
+plt.legend()
 
-        # Mann–Kendall + Sen’s slope
-        res = mk.original_test(y)   # trend, h, p, z, Tau, s, var_s, slope, intercept [web:7][web:9]
-        sen_slope[i, j] = res.slope / dt
-        mk_z[i, j]      = res.z
 
-# ---- plot like your figure ----
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+# ---------------------------------------------------------
+# STEP 2: Autocorrelation Analysis
+# ---------------------------------------------------------
+print("\n--- Step 2: Autocorrelation Analysis ---")
 
-# Sen's slope map
-im1 = ax1.imshow(
-    sen_slope,
-    cmap="RdBu_r",
-    vmin=-0.03, vmax=0.03,   # adjust to your range
-    origin="upper"
-)
-ax1.set_title("SSD Trend Magnitude (Sen’s Slope per Year)")
-ax1.axis("off")
-cbar1 = fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
-cbar1.set_label("Sen’s slope (per year)")
+# Create a spatially averaged time series for OISST
+ts = df_oisst.groupby('month_index')['sst'].mean()
 
-# MK Z-score map
-im2 = ax2.imshow(
-    mk_z,
-    cmap="RdBu_r",
-    vmin=-4, vmax=4,
-    origin="upper"
-)
-ax2.set_title("SSD Trend Significance (MK Z-Score)")
-ax2.axis("off")
-cbar2 = fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
-cbar2.set_label("MK Z-score")
+# Calculate ACF values
+acf_values = sm.tsa.stattools.acf(ts, nlags=12)
+lag_1 = acf_values[1]
+print(f"Autocorrelation at Lag 1: {lag_1:.4f}")
 
-plt.tight_layout()
+if lag_1 > 0.1:
+    print("RESULT: Significant serial correlation detected at Lag 1.")
+    print("CONCLUSION: Use Modified Mann-Kendall (MMK) for trend analysis.")
+else:
+    print("RESULT: No significant serial correlation.")
+    print("CONCLUSION: Standard Mann-Kendall is acceptable.")
+
+# ACF Plot
+plt.figure(figsize=(10, 5))
+plot_acf(ts, lags=36, alpha=0.05)
+plt.xlabel('Lag (Months)')
+plt.ylabel('Autocorrelation')
+plt.title('Autocorrelation Function (ACF) - Bay of Bengal SST')
+
+
+############################################################################
+# Analysis Begins
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.seasonal import STL
+import pymannkendall as mk
+from scipy.stats import theilslopes
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# 1. LOAD DATA
+path = '/content/drive/MyDrive/earthengine/BoB_SST_41Years_Scaled_1985_2025.csv'
+df = pd.read_csv(path)
+
+# --- PHASE 2: CLIMATOLOGY & CHARACTERIZATION ---
+climatology = df.groupby(['latitude', 'longitude'])['sst'].mean().reset_index()
+ts_avg = df.groupby(['year', 'month'])['sst'].mean().reset_index()
+ts_avg['date'] = pd.to_datetime(ts_avg[['year', 'month']].assign(day=1))
+ts_avg = ts_avg.sort_values('date').set_index('date')
+stl = STL(ts_avg['sst'], period=12, robust=True).fit()
+
+# Plotting Climatology & STL
+fig, ax = plt.subplots(1, 2, figsize=(18, 6))
+pivot_map = climatology.pivot(index='latitude', columns='longitude', values='sst')
+sns.heatmap(pivot_map, cmap='magma', ax=ax[0], xticklabels=False, yticklabels=False, cbar_kws={'label': 'Mean SST (°C)'})
+ax[0].set_title('Long-term Climatology (1985-2025)')
+ax[0].invert_yaxis()
+
+ax[1].plot(ts_avg.index, ts_avg['sst'], color='lightgray', alpha=0.5, label='Monthly Data')
+ax[1].plot(ts_avg.index, stl.trend, color='red', linewidth=2, label='STL Trend Component')
+ax[1].set_title('STL Decomposition (Climate Signal Isolation)')
+ax[1].legend()
+plt.show()
+
+# --- PHASE 3: TREND & MAGNITUDE (Yue & Wang 2004) ---
+sst_values = ts_avg['sst'].values
+# Switch to Yue and Wang to fix the 'nan' issue
+yw_res = mk.yue_wang_modification_test(sst_values)
+slope_dec = yw_res.slope * 12 * 10
+
+def get_spatial_yw(group):
+    # Apply Yue & Wang pixel-wise
+    res = mk.yue_wang_modification_test(group['sst'].values)
+    return pd.Series({'p_val': res.p, 'slope': res.slope * 12 * 10})
+
+spatial_stats = df.groupby(['latitude', 'longitude']).apply(get_spatial_yw).reset_index()
+
+# Plotting Significance Map
+plt.figure(figsize=(10, 8))
+sig_map = spatial_stats.copy()
+sig_map.loc[sig_map['p_val'] > 0.05, 'slope'] = np.nan
+pivot_sig = sig_map.pivot(index='latitude', columns='longitude', values='slope')
+sns.heatmap(pivot_sig, cmap='RdYlBu_r', center=0, xticklabels=False, yticklabels=False, cbar_kws={'label': 'Warming Rate (°C/Decade)'})
+plt.title(f'Significant Trends (Yue & Wang, p < 0.05)\nRegional Warming: {slope_dec:.3f}°C/decade')
+plt.gca().invert_yaxis()
 plt.show()
 
 
+# ---------------------------------------------------------
+# PHASE 4: EXTREMES & VARIABILITY
+# ---------------------------------------------------------
+basin_mean = ts_avg['sst'].mean()
+basin_std = ts_avg['sst'].std()
+ts_avg['anomaly'] = (ts_avg['sst'] - basin_mean) / basin_std
+
+threshold = ts_avg['sst'].quantile(0.90)
+ts_avg['is_extreme'] = ts_avg['sst'] > threshold
+extreme_freq = ts_avg.groupby('year')['is_extreme'].sum()
+
+fig, ax = plt.subplots(1, 2, figsize=(18, 5))
+ax[0].bar(ts_avg.index, ts_avg['anomaly'],
+          color=(ts_avg['anomaly'] > 0).map({True: 'salmon', False: 'skyblue'}), width=20)
+ax[0].axhline(0, color='black', lw=1)
+ax[0].set_title('Standardized Anomalies (Z-Score)')
+
+ax[1].plot(extreme_freq.index, extreme_freq.values, marker='s', color='darkred', linestyle='--')
+ax[1].set_title('Extreme Event Frequency (Months > 90th Pctl)')
+ax[1].set_ylabel('Count of Months')
+plt.show()
+
+
+# ---------------------------------------------------------
+# PHASE 5: ROBUSTNESS & SENSITIVITY
+# ---------------------------------------------------------
+unique_years = ts_avg.index.year.unique()
+jackknife_slopes = []
+for yr in unique_years:
+    leave_one_out = ts_avg[ts_avg.index.year != yr]['sst'].values
+    jk_res = mk.hamed_rao_modification_test(leave_one_out)
+    jackknife_slopes.append(jk_res.slope * 12 * 10)
+
+res_theil = theilslopes(sst_values, alpha=0.95)
+lo_ci, hi_ci = res_theil[2] * 120, res_theil[3] * 120
+
+plt.figure(figsize=(10, 5))
+sns.histplot(jackknife_slopes, kde=True, color='green')
+plt.axvline(slope_dec, color='red', label='Full Dataset Slope')
+plt.title('Jackknife Sensitivity (Is the trend stable?)')
+plt.xlabel('Decadal Slope (°C/decade)')
+plt.legend()
+plt.show()
+
+print(f"\n--- MANUSCRIPT SUMMARY STATISTICS ---")
+print(f"Statistical Method: Yue and Wang (2004) Modified Mann-Kendall")
+print(f"Decadal Trend: {slope_dec:.4f} °C/decade")
+print(f"95% Confidence Interval: [{lo_ci:.4f} to {hi_ci:.4f}]")
+print(f"Yue-Wang P-Value: {yw_res.p:.5f}")
+print(f"Basin Variance (StdDev): {ts_avg['sst'].std():.4f} °C")
